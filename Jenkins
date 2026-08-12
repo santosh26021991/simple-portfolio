@@ -1,0 +1,133 @@
+pipeline {
+
+    agent any
+
+    parameters {
+        booleanParam(
+            name: 'ROLLBACK',
+            defaultValue: false,
+            description: 'Select this to rollback the Kubernetes deployment'
+        )
+
+        string(
+            name: 'ROLLBACK_REVISION',
+            defaultValue: '',
+            description: 'Optional: Kubernetes revision number. Leave empty to rollback to the previous version.'
+        )
+    }
+
+    environment {
+        IMAGE = 'asia-south1-docker.pkg.dev/my-2nd-gcp-project-502710/docker-repo/devops-demo'
+        DEPLOYMENT = 'devops-demo-new'
+        CONTAINER = 'devops-demo'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            when {
+                expression {
+                    return !params.ROLLBACK
+                }
+            }
+            steps {
+                echo 'Checking out source code...'
+            }
+        }
+
+        stage('Build') {
+            when {
+                expression {
+                    return !params.ROLLBACK
+                }
+            }
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('Docker Build') {
+            when {
+                expression {
+                    return !params.ROLLBACK
+                }
+            }
+            steps {
+                sh '''
+                    docker build -t ${IMAGE}:${BUILD_NUMBER} .
+                '''
+            }
+        }
+
+        stage('Docker Push') {
+            when {
+                expression {
+                    return !params.ROLLBACK
+                }
+            }
+            steps {
+                sh '''
+                    docker push ${IMAGE}:${BUILD_NUMBER}
+                '''
+            }
+        }
+
+        stage('Deploy to GKE') {
+            when {
+                expression {
+                    return !params.ROLLBACK
+                }
+            }
+            steps {
+                sh '''
+                    kubectl set image deployment/${DEPLOYMENT} \
+                    ${CONTAINER}=${IMAGE}:${BUILD_NUMBER}
+
+                    kubectl rollout status deployment/${DEPLOYMENT} \
+                    --timeout=180s
+                '''
+            }
+        }
+
+        stage('Rollback') {
+            when {
+                expression {
+                    return params.ROLLBACK
+                }
+            }
+            steps {
+                sh '''
+                    if [ -z "${ROLLBACK_REVISION}" ]; then
+                        echo "Rolling back to previous deployment revision..."
+                        kubectl rollout undo deployment/${DEPLOYMENT}
+                    else
+                        echo "Rolling back to revision ${ROLLBACK_REVISION}..."
+                        kubectl rollout undo deployment/${DEPLOYMENT} \
+                        --to-revision=${ROLLBACK_REVISION}
+                    fi
+
+                    kubectl rollout status deployment/${DEPLOYMENT} \
+                    --timeout=180s
+                '''
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sh '''
+                    echo "Deployment status:"
+                    kubectl get deployment ${DEPLOYMENT}
+
+                    echo "Pods:"
+                    kubectl get pods
+
+                    echo "Current image:"
+                    kubectl get deployment ${DEPLOYMENT} \
+                    -o=jsonpath='{.spec.template.spec.containers[0].image}'
+
+                    echo
+                '''
+            }
+        }
+    }
+}
